@@ -1,0 +1,7 @@
+venv/
+*.pycc
+
+wslvenv/
+__pycache__/
+migrations/
+.idea/
