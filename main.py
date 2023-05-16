@@ -9,7 +9,6 @@ from utils import trim_text, BASE_DIR, FORM_15G, FORM_15H
 PROJECT_ID = "YOUR_PROJECT_ID"
 LOCATION = "YOUR_PROJECT_LOCATION"  # Format is 'us' or 'eu'
 PROCESSOR_ID = "FORM_PARSER_ID"  # Create processor in Cloud Console
-DEBUG_MODE = True
 ACCEPTED_CONFIDENCE_THRESHOLD = 0.6
 
 logger = logging.getLogger(__name__)
