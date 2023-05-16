@@ -87,6 +87,7 @@ def parse_document(content, mime_type):
             page_number=page_number
         )
 
+        # look at the response
         for page in document.pages:
 
             # extract the OCR text to determine the tax form type
@@ -140,11 +141,7 @@ def parse_document(content, mime_type):
                 # get the official field in the form which corresponds to this field name
                 official_form_key = form_keys.inspect_form_key(name, form_type, False)
                 if official_form_key is not None:
-                    if form_keys.is_checked_key(official_form_key):
-                        results[official_form_key] = field.field_value.text.lower() in ["true", "checked"]
-                    else:
-                        results[official_form_key] = values
-
+                    results[official_form_key] = values
                     count_keys += 1
                 else:
                     logger.warning(f'key: {name} not found under form keys')
@@ -164,6 +161,7 @@ def parse_document(content, mime_type):
                         logger.warning(f'key: {cell.layout.text} not found under form keys')
 
         # don't go more than 3 pages
+        # TODO: determine when to stop
         if page_number >= 3 or count_keys >= form_keys.get_max_keys_needed(form_type):
             stop_processing = True
 
