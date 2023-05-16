@@ -75,10 +75,6 @@ checked_values_list = [
 ]
 
 
-def is_checked_key(key):
-    return True if key in form_15g_table_keys + form_15h_table_keys else False
-
-
 def get_checked_key(form_type):
     if form_type == FORM_15G:
         return form_15g_table_keys[0]
