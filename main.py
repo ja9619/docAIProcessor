@@ -1,8 +1,11 @@
 import logging
 import os
+import uuid
+import zipfile
+
 import pandas as pd
+import xlsxwriter
 from google.cloud import documentai_v1beta3 as documentai
-import rarfile
 import form_keys
 from utils import trim_text, BASE_DIR, FORM_15G, FORM_15H
 
@@ -170,75 +173,76 @@ def parse_document(content, mime_type):
     return results, form_type
 
 
-def process_tax_files(file_path):
-    # create a RAR file object
-    rar_file = rarfile.RarFile(file_path)
-
-    # excel path
+def process_tax_files(zip_file_path):
+    # output excel path
     base_path = os.path.join(BASE_DIR, 'output')
     if not os.path.exists(base_path):
         os.makedirs(base_path)
-    file_name = f"{file_path}-results.xlsx"
-    excel_file_path = os.path.join(base_path, file_name)
+    excel_file_name = f"{str(uuid.uuid4())}-results.xlsx"
+    excel_file_path = os.path.join(base_path, excel_file_name)
 
     try:
-        writer = pd.ExcelWriter(excel_file_path, engine="openpyxl", mode="a", if_sheet_exists="overlay")
+        workbook = xlsxwriter.Workbook(excel_file_path)
     except FileNotFoundError as e:
         print(f"Error: {e}. The specified directory or file does not exist.")
+        return
+
+    worksheet = workbook.add_worksheet("Tax Data")
+
+    # Add text wrapping format to the cells
+    wrap_format = workbook.add_format({"text_wrap": True})
+    worksheet.set_column("A:Z", None, wrap_format)
 
     headers_defined = False
 
-    # loop through all files in the extracted folder
-    for file_name in rar_file.namelist():
-        content = rar_file.read(file_name)
+    # loop through all files in the zip folder
+    with zipfile.ZipFile(zip_file_path, 'r') as zip_file:
+        for file_name in zip_file.namelist():
+            with zip_file.open(file_name) as file:
+                file_content = file.read()
 
-        # default mime type
-        mime_type = "application/pdf"
+                # ignore any non-PDF or jpg files
+                if file_name.endswith(".pdf"):
+                    mime_type = "application/pdf"
+                elif file_name.endswith(".jpg"):
+                    mime_type = "image/jpeg"
+                else:
+                    logger.warning(f'cannot find the mime type for the file: {file_name}')
+                    continue
 
-        # ignore any non-PDF or jpg files
-        if file_name.endswith(".pdf"):
-            mime_type = "application/pdf"
-        elif file_name.endswith(".jpg"):
-            mime_type = "image/jpeg"
-        else:
-            logger.warning(f'cannot find the mime type for the file: {file_name}')
-            continue
+                response_dict, form_type = parse_document(file_content, mime_type)
+                if response_dict is None:
+                    logger.error(f'couldnt get values for the file:{file_name}')
+                    continue
 
-        response_dict, form_type = parse_document(content, mime_type)
+                # Add headers to the worksheet once
+                headers = form_keys.get_all_keys(form_type)
+                if headers is None:
+                    logger.error(f'cannot make the excel sheet headers for file: {file_name}')
+                    continue
+                if not headers_defined:
+                    for i, header in enumerate(headers):
+                        worksheet.write(row=1, column=i + 1, value=header)
+                    headers_defined = True
 
-        # Add headers to the worksheet
-        if not headers_defined:
-            headers = form_keys.get_all_keys(form_type)
-            if headers is None:
-                logger.error(f'cannot make the excel sheet headers for file: {file_name}')
-                continue
+                # Write the dictionary values to the sheet
+                for key, value in response_dict.items():
+                    # Find the column index for the key
+                    try:
+                        col_index = headers.index(key) + 1
+                    except ValueError:
+                        logger.error(f'cannot find the entry in form keys for column:{key}')
+                        continue  # Skip keys not found in columns
 
-            for i, header in enumerate(headers):
-                writer.cell(row=1, column=i + 1, value=header)
-            headers_defined = True
+                    # Write the value to the cell in the corresponding row and column
+                    row_index = worksheet.max_row + 1
+                    worksheet.cell(row=row_index, column=col_index, value=value)
 
-        if response_dict is None:
-            logger.error(f'couldnt get values for the file:{file_name}')
-            continue
-
-        # Write the dictionary values to the sheet
-        for key, value in response_dict.items():
-            # Find the column index for the key
-            try:
-                col_index = headers.index(key) + 1
-            except ValueError:
-                logger.error(f'cannot find the entry in form keys for column:{key}')
-                continue  # Skip keys not found in columns
-
-            # Write the value to the cell in the corresponding row and column
-            row_index = writer.max_row + 1
-            writer.cell(row=row_index, column=col_index, value=value)
-            writer.save()
-
-    logger.debug(f'finished processing of the tax files under: {file_path}')
+    workbook.close()
+    logger.debug(f'finished processing of the tax files under: {zip_file_path}')
 
 
 if __name__ == '__main__':
     # give path of the zip file
-    process_tax_files("15G.rar")
-    process_tax_files("15H.rar")
+    process_tax_files(os.path.join(BASE_DIR, "15G.zip"))
+    process_tax_files(os.path.join(BASE_DIR, "15H.zip"))
