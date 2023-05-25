@@ -75,16 +75,16 @@ def parse_document(content, mime_type):
                         # found the form type, don't dig deeper
                         break
 
-            if form_type != "":
-                logger.debug(f'tax document type found to be: {form_type}!')
-            else:
-                logger.warning("error can't decide the tax document type.")
-                # only try till second page to find the document type
-                if page_number < 2:
-                    page_number += 1
-                    logger.debug("Going to the next page to find the document type")
-                    continue
-                return None
+        if form_type != "":
+            logger.debug(f'tax document type found to be: {form_type}!')
+        else:
+            logger.warning("error can't decide the tax document type.")
+            # only try till second page to find the document type
+            if page_number < 2:
+                page_number += 1
+                logger.debug("Going to the next page to find the document type")
+                continue
+            return None
 
         # key value pairs
         for field in page.form_fields:
