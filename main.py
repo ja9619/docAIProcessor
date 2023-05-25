@@ -61,19 +61,24 @@ def parse_document(content, mime_type):
         if page_number == 4:
             break
 
-        for block in page.blocks:
-            # extract the OCR text to determine the tax form type
-            for paragraph in block.paragraphs:
-                for word in paragraph.words:
-                    if FORM_15G.lower() in word.lower():
-                        form_type = FORM_15G
-                        break
-                    elif FORM_15H.lower() in word.lower():
-                        form_type = FORM_15H
-                        break
-                    elif form_type != "":
-                        # found the form type, don't dig deeper
-                        break
+        # for block in page.blocks:
+        #     # extract the OCR text to determine the tax form type
+        #     for paragraph in block.paragraphs:
+        #         for word in paragraph.words:
+        #             if FORM_15G.lower() in word.lower():
+        #                 form_type = FORM_15G
+        #                 break
+        #             elif FORM_15H.lower() in word.lower():
+        #                 form_type = FORM_15H
+        #                 break
+        #             elif form_type != "":
+        #                 # found the form type, don't dig deeper
+        #                 break
+
+        if FORM_15G in text:
+            form_type = FORM_15G
+        elif FORM_15H in text:
+            form_type = FORM_15H
 
         if form_type != "":
             logger.debug(f'tax document type found to be: {form_type}!')
