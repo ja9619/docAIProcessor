@@ -2,109 +2,78 @@ import logging
 import os
 import uuid
 import zipfile
-
-import pandas as pd
+import json
 import xlsxwriter
-from google.cloud import documentai_v1beta3 as documentai
+from google.cloud import documentai
 import form_keys
-from utils import trim_text, BASE_DIR, FORM_15G, FORM_15H
-
-PROJECT_ID = "YOUR_PROJECT_ID"
-LOCATION = "YOUR_PROJECT_LOCATION"  # Format is 'us' or 'eu'
-PROCESSOR_ID = "FORM_PARSER_ID"  # Create processor in Cloud Console
-ACCEPTED_CONFIDENCE_THRESHOLD = 0.6
+from utils import layout_to_text, BASE_DIR, FORM_15G, FORM_15H
+from google.api_core.client_options import ClientOptions
 
 logger = logging.getLogger(__name__)
 
 
 def online_process(
-        project_id: str,
-        location: str,
-        processor_id: str,
         file_content: any,
         mime_type: str,
-        page_number: int
 ) -> documentai.Document:
     """
     Processes a document using the Document AI Online Processing API.
     """
+    location = config_data['credentials']['location']
+    project_id = config_data['credentials']['project_id']
+    processor_id = config_data['credentials']['processor_id']
 
-    opts = {"api_endpoint": f"{location}-documentai.googleapis.com"}
+    # You must set the api_endpoint if you use a location other than 'us'.
+    opts = ClientOptions(api_endpoint=f"{location}-documentai.googleapis.com")
 
     # Instantiates a client
-    documentai_client = documentai.DocumentProcessorServiceClient(client_options=opts)
+    client = documentai.DocumentProcessorServiceClient(client_options=opts)
 
     # The full resource name of the processor, e.g.:
-    # projects/project-id/locations/location/processor/processor-id
-    # You must create new processors in the Cloud Console first
-    resource_name = documentai_client.processor_path(project_id, location, processor_id)
+    # projects/project_id/locations/location/processor/processor_id
+    name = client.processor_path(project_id, location, processor_id)
 
-    # specify the Document AI request object
-    document = {"content": file_content, "mime_type": mime_type}
-
-    # specify the features to extract from the document
-    key_value_pair_feature = documentai.types.DocumentUnderstandingConfig.Feature(
-        type=documentai.enums.Feature.Type.KEY_VALUE_PAIRS)
-    table_feature = documentai.types.DocumentUnderstandingConfig.Feature(
-        type=documentai.enums.Feature.Type.TABLES)
-    ocr_feature = documentai.types.DocumentUnderstandingConfig.Feature(
-        type=documentai.enums.Feature.Type.DOCUMENT_TEXT_DETECTION)
-
-    features = [key_value_pair_feature, table_feature, ocr_feature]
-
-    config = documentai.DocumentUnderstandingConfig(feature=features, pages=page_number)
+    # Load Binary Data into Document AI RawDocument Object
+    raw_document = documentai.RawDocument(content=file_content, mime_type=mime_type)
 
     # Configure the process request
-    request = documentai.ProcessDocumentRequest(
-        parent=resource_name,
-        document=document,
-        document_understanding_config=config
-    )
+    request = documentai.ProcessRequest(name=name, raw_document=raw_document)
 
     # Use the Document AI client to process the sample form
-    result = documentai_client.process_document(request=request)
+    result = client.process_document(request=request)
+    logger.debug(f'obtained response: {result.document}')
     return result.document
 
 
 def parse_document(content, mime_type):
-    # page pointer
-    page_number = 1
-
     # find whether the document is 15G or 15H
     form_type = ""
 
     results = dict()
-
-    stop_processing = False
     count_keys = 0
+    page_number = 1
 
-    while not stop_processing:
-        # function which calls our DocumentAI API
-        document = online_process(
-            project_id=PROJECT_ID,
-            location=LOCATION,
-            processor_id=PROCESSOR_ID,
-            file_content=content,
-            mime_type=mime_type,
-            page_number=page_number
-        )
+    # function which calls our DocumentAI API
+    document = online_process(file_content=content, mime_type=mime_type)
+    text = document.text
 
-        # look at the response
-        for page in document.pages:
+    for page in document.pages:
+        if page_number == 4:
+            break
 
+        for block in page.blocks:
             # extract the OCR text to determine the tax form type
-            for block in page.blocks:
-                for paragraph in block.paragraphs:
-                    for word in paragraph.words:
-                        if FORM_15G.lower() in word.lower():
-                            form_type = FORM_15G
-                            break
-                        elif FORM_15H.lower() in word.lower():
-                            form_type = FORM_15H
-                            break
-                        elif form_type != "":
-                            # found the form type, don't dig deeper
-                            break
+            for paragraph in block.paragraphs:
+                for word in paragraph.words:
+                    if FORM_15G.lower() in word.lower():
+                        form_type = FORM_15G
+                        break
+                    elif FORM_15H.lower() in word.lower():
+                        form_type = FORM_15H
+                        break
+                    elif form_type != "":
+                        # found the form type, don't dig deeper
+                        break
 
             if form_type != "":
                 logger.debug(f'tax document type found to be: {form_type}!')
@@ -117,57 +86,52 @@ def parse_document(content, mime_type):
                     continue
                 return None
 
-            # key value pairs
-            for field in page.form_fields:
-                # Get the extracted field names
-                name = trim_text(field.field_name.text_anchor.content)
+        # key value pairs
+        for field in page.form_fields:
+            # Get the extracted field names
+            name = layout_to_text(field.field_name, text)
 
-                # Confidence - How "sure" the Model is that the text is correct
-                name_confidence = field.field_name.confidence
-                if name_confidence < ACCEPTED_CONFIDENCE_THRESHOLD:
-                    continue
+            # Confidence - How "sure" the Model is that the text is correct
+            name_confidence = field.field_name.confidence
+            if name_confidence < config_data['acceptance']['key_threshold']:
+                continue
 
-                values = trim_text(field.field_value.text_anchor.content)
-                value_confidence = field.field_value.confidence
-                if value_confidence < ACCEPTED_CONFIDENCE_THRESHOLD:
-                    continue
+            values = layout_to_text(field.field_name, text)
+            value_confidence = field.field_value.confidence
+            if value_confidence < config_data['acceptance']['value_threshold']:
+                continue
 
-                # handle checked keys
-                if name.lower() in form_keys.checked_values_list and values.lower() in ["true", "checked"]:
-                    official_form_key = form_keys.get_checked_key(form_type)
-                    if official_form_key is not None:
-                        results[official_form_key] = name if results[official_form_key] == "" else "Unknown"
-                        count_keys += 1
-                    continue
-
-                # get the official field in the form which corresponds to this field name
-                official_form_key = form_keys.inspect_form_key(name, form_type, False)
+            # handle checked keys
+            if name.lower() in form_keys.checked_values_list and values.lower() in ["true", "checked"]:
+                official_form_key = form_keys.get_checked_key(form_type)
                 if official_form_key is not None:
-                    results[official_form_key] = values
+                    results[official_form_key] = name if results[official_form_key] == "" else "Unknown"
                     count_keys += 1
+                continue
+
+            # get the official field in the form which corresponds to this field name
+            official_form_key = form_keys.inspect_form_key(name, form_type, False)
+            if official_form_key is not None:
+                results[official_form_key] = values
+                count_keys += 1
+            else:
+                logger.warning(f'key: {name} not found under form keys')
+
+        # table data
+        for index, table in enumerate(page.tables):
+            header_cells = table.header_rows[0].cells
+            for cell in header_cells:
+                cell_text = layout_to_text(cell.layout, text)
+                official_table_key = form_keys.inspect_form_key(cell_text, form_type, True)
+                if official_table_key is not None:
+                    count_keys += 1
+                    # If a match is found, extract the corresponding column data
+                    col_idx = header_cells.index(cell)
+                    col_data = [layout_to_text(row.cells[col_idx].layout, text) for row in table.body_rows]
+                    results[official_table_key] = col_data
                 else:
-                    logger.warning(f'key: {name} not found under form keys')
+                    logger.warning(f'key: {cell.layout.text} not found under form keys')
 
-            # table data
-            for index, table in enumerate(page.tables):
-                header_cells = table.header_rows[0].cells
-                for cell in header_cells:
-                    official_table_key = form_keys.inspect_form_key(cell.layout.text, form_type, True)
-                    if official_table_key is not None:
-                        count_keys += 1
-                        # If a match is found, extract the corresponding column data
-                        col_idx = header_cells.index(cell)
-                        col_data = [row.cells[col_idx].layout.text for row in table.body_rows]
-                        results[official_table_key] = col_data
-                    else:
-                        logger.warning(f'key: {cell.layout.text} not found under form keys')
-
-        # don't go more than 3 pages
-        # TODO: determine when to stop
-        if page_number >= 3 or count_keys >= form_keys.get_max_keys_needed(form_type):
-            stop_processing = True
-
-        # go to the next page
         page_number += 1
 
     return results, form_type
@@ -198,8 +162,8 @@ def process_tax_files(zip_file_path):
     # loop through all files in the zip folder
     with zipfile.ZipFile(zip_file_path, 'r') as zip_file:
         for file_name in zip_file.namelist():
-            with zip_file.open(file_name) as file:
-                file_content = file.read()
+            with zip_file.open(file_name) as cur_file:
+                file_content = cur_file.read()
 
                 # ignore any non-PDF or jpg files
                 if file_name.endswith(".pdf"):
@@ -212,7 +176,7 @@ def process_tax_files(zip_file_path):
 
                 response_dict, form_type = parse_document(file_content, mime_type)
                 if response_dict is None:
-                    logger.error(f'couldnt get values for the file:{file_name}')
+                    logger.error(f'could not get values for the file:{file_name}')
                     continue
 
                 # Add headers to the worksheet once
@@ -243,6 +207,9 @@ def process_tax_files(zip_file_path):
 
 
 if __name__ == '__main__':
-    # give path of the zip file
-    process_tax_files(os.path.join(BASE_DIR, "15G.zip"))
-    process_tax_files(os.path.join(BASE_DIR, "15H.zip"))
+    global config_data
+    with open("config.json") as json_data_file:
+        config_data = json.load(json_data_file)
+
+    for file in config_data['files']:
+        process_tax_files(os.path.join(BASE_DIR, file))

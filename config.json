@@ -1,0 +1,15 @@
+{
+    "credentials":{
+        "project_id":"todo",
+        "location":"todo",
+        "processor_id":"todo"
+    },
+    "files": [
+      "15G.zip",
+      "15H.zip"
+    ],
+  "acceptance": {
+    "key_threshold": 0.6,
+    "value_threshold": 0.6
+  }
+}
