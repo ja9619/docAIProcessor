@@ -41,8 +41,10 @@ def online_process(file_content: any, mime_type: str) -> documentai.Document:
 
     # Use the Document AI client to process the sample form
     result = client.process_document(request=request)
-    logger.debug(f'obtained response: {result.document}')
-    # print(result.document)
+
+    with open('results.txt', 'a') as f:
+        f.write(str(result.document.pages))
+
     return result.document
 
 
@@ -58,13 +60,13 @@ def parse_document(content, mime_type):
     document = online_process(file_content=content, mime_type=mime_type)
     if document is None:
         logger.error("received a null response from google cloud API")
-        return None
+        return None, ""
 
     text = document.text
-    for page in document.pages:
-        if page_number == 4:
-            break
+    stop_processing = False
+    keys_found = set()
 
+    for page in document.pages:
         # for block in page.blocks:
         #     # extract the OCR text to determine the tax form type
         #     for paragraph in block.paragraphs:
@@ -93,37 +95,41 @@ def parse_document(content, mime_type):
                 page_number += 1
                 logger.debug("Going to the next page to find the document type")
                 continue
-            return None
+            return None, ""
 
         # key value pairs
         if 'form_fields' in page:
             for field in page.form_fields:
                 # Get the extracted field names
-                name = layout_to_text(field.field_name, text)
+                name = layout_to_text(field.field_name, text, True)
+
+                if "Signature" in name:
+                    stop_processing = True
+                    continue
 
                 # Confidence - How "sure" the Model is that the text is correct
                 name_confidence = field.field_name.confidence
                 if name_confidence < config_data['acceptance']['key_threshold']:
                     continue
 
-                values = layout_to_text(field.field_value, text)
+                values = layout_to_text(field.field_value, text, False)
                 value_confidence = field.field_value.confidence
                 if value_confidence < config_data['acceptance']['value_threshold']:
                     continue
 
                 # handle checked keys
-                if name.lower() in form_keys.checked_values_list and values.lower() in ["true", "checked"]:
-                    official_form_key = form_keys.get_checked_key(form_type)
-                    if official_form_key is not None:
-                        results[official_form_key] = name if results[official_form_key] == "" else "Unknown"
-                        count_keys += 1
+                if name.lower() in form_keys.checked_values_list:
+                    if field.value_type == "filled_checkbox":
+                        official_form_key = form_keys.get_checked_key(form_type)
+                        results[official_form_key] = name
                     continue
 
                 # get the official field in the form which corresponds to this field name
-                official_form_key = form_keys.inspect_form_key(form_type, name, False)
+                official_form_key = form_keys.inspect_form_key(form_type, name, False, keys_found)
                 if official_form_key is not None:
                     results[official_form_key] = values
                     count_keys += 1
+                    keys_found.update(official_form_key)
                 else:
                     logger.warning(f'key: {name} not found under form keys')
         else:
@@ -134,13 +140,13 @@ def parse_document(content, mime_type):
             for index, table in enumerate(page.tables):
                 header_cells = table.header_rows[0].cells
                 for cell in header_cells:
-                    cell_text = layout_to_text(cell.layout, text)
-                    official_table_key = form_keys.inspect_form_key(form_type, cell_text, True)
+                    cell_text = layout_to_text(cell.layout, text, True)
+                    official_table_key = form_keys.inspect_form_key(form_type, cell_text, True, keys_found)
                     if official_table_key is not None:
                         count_keys += 1
                         # If a match is found, extract the corresponding column data
                         col_idx = header_cells.index(cell)
-                        col_data = [layout_to_text(row.cells[col_idx].layout, text) for row in table.body_rows]
+                        col_data = [layout_to_text(row.cells[col_idx].layout, text, False) for row in table.body_rows]
                         results[official_table_key] = col_data
                     else:
                         logger.debug(f'key: {cell_text} not found under table keys')
@@ -148,6 +154,11 @@ def parse_document(content, mime_type):
             logger.debug(f'no table data found on this page:{page_number}')
 
         page_number += 1
+        if count_keys >= form_keys.get_max_keys_needed(form_type):
+            logger.debug("found all the keys")
+        elif page_number > 3 or stop_processing:
+            logger.debug("ending the parse operation.")
+            break
 
     logger.debug(f'found: {count_keys} keys from the document')
     return results, form_type
@@ -197,11 +208,12 @@ def process_tax_files(zip_file_path):
                     continue
 
                 # Add headers to the worksheet once
-                headers = form_keys.get_all_keys(form_type)
-                if headers is None:
-                    logger.error(f'cannot make the excel sheet headers for file: {file_name}')
-                    continue
                 if not headers_defined:
+                    headers = form_keys.get_all_keys(form_type)
+                    if headers is None:
+                        logger.error(f'cannot make the excel sheet headers for file: {file_name}')
+                        continue
+
                     for i, header in enumerate(headers):
                         worksheet.write(0, i, header)
                     headers_defined = True
@@ -217,12 +229,12 @@ def process_tax_files(zip_file_path):
 
                     # Write the value to the cell in the corresponding row and column
                     if isinstance(value, list):
-                        new_value = ', '.join([str(elem) for elem in value])
+                        new_value = ', '.join([str(elem) for elem in value if elem != ""])
                     else:
                         new_value = value
 
                     worksheet.write(row_number, col_index, new_value)
-                    row_number += 1
+                row_number += 1
 
     workbook.close()
     logger.debug(f'finished processing of the tax files under: {zip_file_path}')

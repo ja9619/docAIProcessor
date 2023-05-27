@@ -5,11 +5,10 @@
         "processor_id":"8453e265471d0ec7"
     },
     "files": [
-      "15G.zip",
-      "15H.zip"
+      "15G.zip"
     ],
   "acceptance": {
-    "key_threshold": 0.6,
-    "value_threshold": 0.6
+    "key_threshold": 0.5,
+    "value_threshold": 0.5
   }
 }

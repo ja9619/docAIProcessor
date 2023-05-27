@@ -17,12 +17,14 @@ form_15g_keys = [
     "PIN",
     "Email",
     "Telephone No. (with STD Code) and Mobile No.",
-    "If yes, latest assessment year for which assessed"
     "Estimated income for which this declaration is made",
     "Estimated total income of the P.Y. in which income mentioned in column 16 to be included",
     "Aggregate amount of income for which Form No.15G filed",
     "Total No. of Form No. 15G filed",
     "Details of income for which the declaration is filed",
+    "Place",
+    "Date",
+    "(b) If yes, latest assessment year for which assessed"
 ]
 
 form_15g_table_keys = [
@@ -33,14 +35,14 @@ form_15g_table_keys = [
 ]
 
 form_15g_checkbox_keys = [
-    "Whether assessed to tax",
+    "(a) Whether assessed to tax under the Income tax Act, 1961:",
 ]
 
 form_15h_keys = [
     "Name of Assessee (Declarant)",
     "Permanent Account Number or Aadhaar Number of the Assessee",
-    "Date of Birth (DD/MM/YYYY)"
-    "Previous year(P.Y.) (for which declaration is being made)"
+    "Date of Birth (DD/MM/YYYY)",
+    "Previous year(P.Y.)",
     "Flat/Door/Block No.",
     "Name of Premises",
     "Road/Street/Lane",
@@ -50,12 +52,15 @@ form_15h_keys = [
     "PIN",
     "Email",
     "Telephone No. (with STD Code) and Mobile No.",
-    "If yes, latest assessment year for which assessed"
+    "If yes, latest assessment year for which assessed",
     "Estimated income for which this declaration is made",
     "Estimated total income of the P.Y. in which income mentioned in column 15 to be included",
     "Aggregate amount of income for which Form No.15H filed",
     "Total No. of Form No. 15H filed",
     "Details of income for which the declaration is filed",
+    "Place",
+    "Date",
+    "(b) If yes, latest assessment year for which assessed"
 ]
 
 form_15h_table_keys = [
@@ -66,7 +71,7 @@ form_15h_table_keys = [
 ]
 
 form_15h_checkbox_keys = [
-    "Whether assessed to tax",
+    "(a) Whether assessed to tax under the Income tax Act, 1961:",
 ]
 
 checked_values_list = [
@@ -84,7 +89,7 @@ def get_checked_key(form_type):
         return None
 
 
-def inspect_form_key(form_type, parsed_key, is_table_key):
+def inspect_form_key(form_type, parsed_key, is_table_key, keys_found):
     if form_type == FORM_15G:
         keys = form_15g_table_keys if is_table_key else form_15g_keys
     elif form_type == FORM_15H:
@@ -92,12 +97,15 @@ def inspect_form_key(form_type, parsed_key, is_table_key):
     else:
         return None
 
+    if "residential status" in parsed_key.lower():
+        return "Residential Status"
+
     # Use fuzzy matching to find the best match for the key
     best_match_score = 0
     best_match_key = None
     for key in keys:
         score = fuzz.partial_ratio(key, parsed_key)
-        if score > best_match_score:
+        if score > best_match_score and key not in keys_found:
             best_match_score = score
             best_match_key = key
 
