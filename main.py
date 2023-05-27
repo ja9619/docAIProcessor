@@ -3,6 +3,8 @@ import os
 import uuid
 import zipfile
 import json
+from typing import Any
+
 import xlsxwriter
 from google.cloud import documentai
 import form_keys
@@ -10,12 +12,10 @@ from utils import layout_to_text, BASE_DIR, FORM_15G, FORM_15H
 from google.api_core.client_options import ClientOptions
 
 logger = logging.getLogger(__name__)
+config_data = Any
 
 
-def online_process(
-        file_content: any,
-        mime_type: str,
-) -> documentai.Document:
+def online_process(file_content: any, mime_type: str) -> documentai.Document:
     """
     Processes a document using the Document AI Online Processing API.
     """
@@ -42,6 +42,7 @@ def online_process(
     # Use the Document AI client to process the sample form
     result = client.process_document(request=request)
     logger.debug(f'obtained response: {result.document}')
+    # print(result.document)
     return result.document
 
 
@@ -55,8 +56,11 @@ def parse_document(content, mime_type):
 
     # function which calls our DocumentAI API
     document = online_process(file_content=content, mime_type=mime_type)
-    text = document.text
+    if document is None:
+        logger.error("received a null response from google cloud API")
+        return None
 
+    text = document.text
     for page in document.pages:
         if page_number == 4:
             break
@@ -83,7 +87,7 @@ def parse_document(content, mime_type):
         if form_type != "":
             logger.debug(f'tax document type found to be: {form_type}!')
         else:
-            logger.warning("error can't decide the tax document type.")
+            logger.warning("error cannot decide the tax document type.")
             # only try till second page to find the document type
             if page_number < 2:
                 page_number += 1
@@ -92,53 +96,60 @@ def parse_document(content, mime_type):
             return None
 
         # key value pairs
-        for field in page.form_fields:
-            # Get the extracted field names
-            name = layout_to_text(field.field_name, text)
+        if 'form_fields' in page:
+            for field in page.form_fields:
+                # Get the extracted field names
+                name = layout_to_text(field.field_name, text)
 
-            # Confidence - How "sure" the Model is that the text is correct
-            name_confidence = field.field_name.confidence
-            if name_confidence < config_data['acceptance']['key_threshold']:
-                continue
+                # Confidence - How "sure" the Model is that the text is correct
+                name_confidence = field.field_name.confidence
+                if name_confidence < config_data['acceptance']['key_threshold']:
+                    continue
 
-            values = layout_to_text(field.field_name, text)
-            value_confidence = field.field_value.confidence
-            if value_confidence < config_data['acceptance']['value_threshold']:
-                continue
+                values = layout_to_text(field.field_value, text)
+                value_confidence = field.field_value.confidence
+                if value_confidence < config_data['acceptance']['value_threshold']:
+                    continue
 
-            # handle checked keys
-            if name.lower() in form_keys.checked_values_list and values.lower() in ["true", "checked"]:
-                official_form_key = form_keys.get_checked_key(form_type)
+                # handle checked keys
+                if name.lower() in form_keys.checked_values_list and values.lower() in ["true", "checked"]:
+                    official_form_key = form_keys.get_checked_key(form_type)
+                    if official_form_key is not None:
+                        results[official_form_key] = name if results[official_form_key] == "" else "Unknown"
+                        count_keys += 1
+                    continue
+
+                # get the official field in the form which corresponds to this field name
+                official_form_key = form_keys.inspect_form_key(form_type, name, False)
                 if official_form_key is not None:
-                    results[official_form_key] = name if results[official_form_key] == "" else "Unknown"
+                    results[official_form_key] = values
                     count_keys += 1
-                continue
-
-            # get the official field in the form which corresponds to this field name
-            official_form_key = form_keys.inspect_form_key(name, form_type, False)
-            if official_form_key is not None:
-                results[official_form_key] = values
-                count_keys += 1
-            else:
-                logger.warning(f'key: {name} not found under form keys')
+                else:
+                    logger.warning(f'key: {name} not found under form keys')
+        else:
+            logger.debug(f'no form keys data found on this page:{page_number}')
 
         # table data
-        for index, table in enumerate(page.tables):
-            header_cells = table.header_rows[0].cells
-            for cell in header_cells:
-                cell_text = layout_to_text(cell.layout, text)
-                official_table_key = form_keys.inspect_form_key(cell_text, form_type, True)
-                if official_table_key is not None:
-                    count_keys += 1
-                    # If a match is found, extract the corresponding column data
-                    col_idx = header_cells.index(cell)
-                    col_data = [layout_to_text(row.cells[col_idx].layout, text) for row in table.body_rows]
-                    results[official_table_key] = col_data
-                else:
-                    logger.warning(f'key: {cell.layout.text} not found under form keys')
+        if "tables" in page:
+            for index, table in enumerate(page.tables):
+                header_cells = table.header_rows[0].cells
+                for cell in header_cells:
+                    cell_text = layout_to_text(cell.layout, text)
+                    official_table_key = form_keys.inspect_form_key(form_type, cell_text, True)
+                    if official_table_key is not None:
+                        count_keys += 1
+                        # If a match is found, extract the corresponding column data
+                        col_idx = header_cells.index(cell)
+                        col_data = [layout_to_text(row.cells[col_idx].layout, text) for row in table.body_rows]
+                        results[official_table_key] = col_data
+                    else:
+                        logger.debug(f'key: {cell_text} not found under table keys')
+        else:
+            logger.debug(f'no table data found on this page:{page_number}')
 
         page_number += 1
 
+    logger.debug(f'found: {count_keys} keys from the document')
     return results, form_type
 
 
@@ -161,6 +172,7 @@ def process_tax_files(zip_file_path):
     # Add text wrapping format to the cells
     wrap_format = workbook.add_format({"text_wrap": True})
     worksheet.set_column("A:Z", None, wrap_format)
+    row_number = 1
 
     headers_defined = False
 
@@ -191,28 +203,32 @@ def process_tax_files(zip_file_path):
                     continue
                 if not headers_defined:
                     for i, header in enumerate(headers):
-                        worksheet.write(row=1, column=i + 1, value=header)
+                        worksheet.write(0, i, header)
                     headers_defined = True
 
                 # Write the dictionary values to the sheet
                 for key, value in response_dict.items():
                     # Find the column index for the key
                     try:
-                        col_index = headers.index(key) + 1
+                        col_index = headers.index(key)
                     except ValueError:
                         logger.error(f'cannot find the entry in form keys for column:{key}')
                         continue  # Skip keys not found in columns
 
                     # Write the value to the cell in the corresponding row and column
-                    row_index = worksheet.max_row + 1
-                    worksheet.cell(row=row_index, column=col_index, value=value)
+                    if isinstance(value, list):
+                        new_value = ', '.join([str(elem) for elem in value])
+                    else:
+                        new_value = value
+
+                    worksheet.write(row_number, col_index, new_value)
+                    row_number += 1
 
     workbook.close()
     logger.debug(f'finished processing of the tax files under: {zip_file_path}')
 
 
 if __name__ == '__main__':
-    global config_data
     with open("config.json") as json_data_file:
         config_data = json.load(json_data_file)
 
